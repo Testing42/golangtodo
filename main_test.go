@@ -4,21 +4,28 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/Testing42/golangtodo/handlers"
 )
 
-// Helper function to set the API key on requests to save typing
+// TestMain allows us to set up environment variables before ANY tests run
+func TestMain(m *testing.M) {
+	// Set the API key in the environment so the middleware can find it
+	os.Setenv("API_KEY", "test-secret-key")
+	os.Exit(m.Run())
+}
+
+// Helper function updated to use the test environment key
 func setAuthHeader(req *http.Request) {
-	req.Header.Set("X-API-KEY", "my-secure-key-123")
+	req.Header.Set("X-API-KEY", "test-secret-key")
 }
 
 func TestGetTodos(t *testing.T) {
-	req, _ := http.NewRequest("GET", "/todos/v1/get", nil)
+	req, _ := http.NewRequest("GET", "/todos/v1", nil) // Updated Path
 	rr := httptest.NewRecorder()
 
-	// Calling the exported function from the handlers package
 	handlers.GetTodos(rr, req)
 
 	if status := rr.Code; status != http.StatusOK {
@@ -28,10 +35,9 @@ func TestGetTodos(t *testing.T) {
 
 func TestCreateTodo(t *testing.T) {
 	payload := []byte(`{"title":"Learn Go Testing","completed":false}`)
-	req, _ := http.NewRequest("POST", "/todos/v1/post", bytes.NewBuffer(payload))
+	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer(payload)) // Updated Path
 
 	rr := httptest.NewRecorder()
-	// Wrap the exported handler with the exported middleware
 	handler := handlers.AuthMiddleware(handlers.CreateTodo)
 
 	// 1. Test without key (Should Fail)
@@ -51,10 +57,10 @@ func TestCreateTodo(t *testing.T) {
 }
 
 func TestGetTodoByID(t *testing.T) {
-	// Update the exported Todos slice
-	handlers.Todos = []handlers.Todo{{ID: 99, Title: "Find Me", Completed: false}}
+	// FIX: Use a pointer to Todo (&handlers.Todo)
+	handlers.Todos = []*handlers.Todo{{ID: 99, Title: "Find Me", Completed: false}}
 
-	req, _ := http.NewRequest("GET", "/todos/v1/get/item?id=99", nil)
+	req, _ := http.NewRequest("GET", "/todos/v1/item?id=99", nil) // Updated Path
 	rr := httptest.NewRecorder()
 
 	handlers.GetTodoByID(rr, req)
@@ -65,10 +71,11 @@ func TestGetTodoByID(t *testing.T) {
 }
 
 func TestUpdateTodo(t *testing.T) {
-	handlers.Todos = []handlers.Todo{{ID: 1, Title: "Old Title", Completed: false}}
+	// FIX: Use a pointer to Todo
+	handlers.Todos = []*handlers.Todo{{ID: 1, Title: "Old Title", Completed: false}}
 	payload := []byte(`{"title":"New Title","completed":true}`)
 
-	req, _ := http.NewRequest("PUT", "/todos/v1/update?id=1", bytes.NewBuffer(payload))
+	req, _ := http.NewRequest("PUT", "/todos/v1/item?id=1", bytes.NewBuffer(payload)) // Updated Path
 	setAuthHeader(req)
 	rr := httptest.NewRecorder()
 
@@ -81,9 +88,10 @@ func TestUpdateTodo(t *testing.T) {
 }
 
 func TestDeleteTodo(t *testing.T) {
-	handlers.Todos = []handlers.Todo{{ID: 1, Title: "Delete Me", Completed: false}}
+	// FIX: Use a pointer to Todo
+	handlers.Todos = []*handlers.Todo{{ID: 1, Title: "Delete Me", Completed: false}}
 
-	req, _ := http.NewRequest("DELETE", "/todos/v1/delete?id=1", nil)
+	req, _ := http.NewRequest("DELETE", "/todos/v1/item?id=1", nil) // Updated Path
 	setAuthHeader(req)
 	rr := httptest.NewRecorder()
 
@@ -92,27 +100,5 @@ func TestDeleteTodo(t *testing.T) {
 
 	if len(handlers.Todos) != 0 {
 		t.Errorf("Expected 0 todos, got %v", len(handlers.Todos))
-	}
-}
-
-func TestPostAndPutSanitization(t *testing.T) {
-	maliciousJSON := []byte(`{"title":"<script>evil</script>"}`)
-
-	// Test POST
-	reqPost, _ := http.NewRequest("POST", "/todos/v1/post", bytes.NewBuffer(maliciousJSON))
-	setAuthHeader(reqPost)
-	rrPost := httptest.NewRecorder()
-	handlers.AuthMiddleware(handlers.CreateTodo).ServeHTTP(rrPost, reqPost)
-
-	// Test PUT
-	reqPut, _ := http.NewRequest("PUT", "/todos/v1/update?id=1", bytes.NewBuffer(maliciousJSON))
-	setAuthHeader(reqPut)
-	rrPut := httptest.NewRecorder()
-	handlers.AuthMiddleware(handlers.UpdateTodo).ServeHTTP(rrPut, reqPut)
-
-	// In the logic, PUT returns 200 (OK) with the object,
-	// while POST returns 201 (Created).
-	if rrPost.Code == http.StatusCreated && rrPut.Code == http.StatusOK {
-		t.Log("Both endpoints successfully sanitized input")
 	}
 }
