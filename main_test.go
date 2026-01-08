@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,5 +89,28 @@ func TestDeleteTodo(t *testing.T) {
 
 	if len(todos) != 0 {
 		t.Errorf("Expected 0 todos, got %v", len(todos))
+	}
+}
+
+func TestSanitization(t *testing.T) {
+	// Send a title with HTML tags
+	payload := []byte(`{"title":"<img src=x onerror=alert(1)>","completed":false}`)
+	req, _ := http.NewRequest("POST", "/todos/v1/post", bytes.NewBuffer(payload))
+	setAuthHeader(req)
+
+	rr := httptest.NewRecorder()
+	handler := authMiddleware(createTodo)
+	handler.ServeHTTP(rr, req)
+
+	var response Todo
+	json.Unmarshal(rr.Body.Bytes(), &response)
+
+	// The < and > should be converted to &lt; and &gt;
+	if response.Title == "<img src=x onerror=alert(1)>" {
+		t.Errorf("Sanitization failed! Script was not escaped.")
+	}
+
+	if response.Title != "&lt;img src=x onerror=alert(1)&gt;" {
+		t.Logf("Success: Title was sanitized to: %v", response.Title)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 )
 
@@ -44,11 +45,19 @@ func getTodos(w http.ResponseWriter, r *http.Request) {
 
 // Logic for POST only
 func createTodo(w http.ResponseWriter, r *http.Request) {
+	// 1. LIMIT SIZE: Restrict request body to 1 MB
+	// This prevents "Payload Bombing" attacks.
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+
 	var newTodo Todo
 	if err := json.NewDecoder(r.Body).Decode(&newTodo); err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
+		http.Error(w, "Entity too large or invalid JSON", http.StatusRequestEntityTooLarge)
 		return
 	}
+
+	// 2. SANITIZE: Escape any HTML/Script tags
+	// If someone sends "<b>Milk</b>", it becomes "&lt;b&gt;Milk&lt;/b&gt;"
+	newTodo.Title = html.EscapeString(newTodo.Title)
 
 	newTodo.ID = nextID
 	nextID++
