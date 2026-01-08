@@ -16,8 +16,13 @@ var todos []Todo
 var nextID = 1
 
 func main() {
-	// Use one handler to manage different methods for the same path
-	http.HandleFunc("/todos", todoHandler)
+	// Instead of one generic handler, we define specific ones
+	// if you want to keep the same URL for both:
+	// Unique URL for GET
+	http.HandleFunc("/todos/v1/get", getTodos)
+
+	// Unique URL for POST
+	http.HandleFunc("/todos/v1/post", createTodo)
 
 	fmt.Println("Server running on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -25,37 +30,24 @@ func main() {
 	}
 }
 
-func todoHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		getTodos(w, r)
-	case http.MethodPost:
-		createTodo(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
+// Logic for GET only
 func getTodos(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(todos)
 }
 
+// Logic for POST only
 func createTodo(w http.ResponseWriter, r *http.Request) {
 	var newTodo Todo
-
-	// 1. Decode the JSON body from the request into newTodo
 	if err := json.NewDecoder(r.Body).Decode(&newTodo); err != nil {
 		http.Error(w, "Invalid input", http.StatusBadRequest)
 		return
 	}
 
-	// 2. Assign an ID and save it
 	newTodo.ID = nextID
 	nextID++
 	todos = append(todos, newTodo)
 
-	// 3. Send back the created object
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(newTodo)

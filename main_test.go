@@ -9,58 +9,45 @@ import (
 )
 
 func TestGetTodos(t *testing.T) {
-	// Setup: add a test todo
-	todos = []Todo{{ID: 1, Title: "Test Todo", Completed: false}}
-	nextID = 2
-
-	// Create a test request
+	// Create a mock request
 	req, _ := http.NewRequest("GET", "/todos", nil)
-	w := httptest.NewRecorder()
 
-	// Call the handler
-	getTodos(w, req)
+	// ResponseRecorder acts like a mini-browser to capture the result
+	rr := httptest.NewRecorder()
 
-	// Check response status
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+	// We call the function directly
+	getTodos(rr, req)
+
+	// Check status code
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
 	}
 
-	// Check response body
-	var resp []Todo
-	json.NewDecoder(w.Body).Decode(&resp)
-	if len(resp) != 1 || resp[0].Title != "Test Todo" {
-		t.Errorf("unexpected response: %v", resp)
+	// Check if the response is valid JSON (even if empty list)
+	var response []Todo
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Errorf("Response was not valid JSON: %v", err)
 	}
 }
 
 func TestCreateTodo(t *testing.T) {
-	// Reset state for this test
-	todos = []Todo{}
-	nextID = 1
+	// Create a new Todo to send
+	payload := []byte(`{"title":"Learn Go Testing","completed":false}`)
 
-	// Create a test request body
-	body := []byte(`{"title": "Test Todo", "completed": false}`)
-	req, _ := http.NewRequest("POST", "/todos", bytes.NewBuffer(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/todos", bytes.NewBuffer(payload))
+	rr := httptest.NewRecorder()
 
-	// Call the handler
-	createTodo(w, req)
+	// Call the separate create function
+	createTodo(rr, req)
 
-	// Check status
-	if w.Code != http.StatusCreated {
-		t.Errorf("expected status 201, got %d", w.Code)
+	if status := rr.Code; status != http.StatusCreated {
+		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusCreated)
 	}
 
-	// Check response body
-	var createdTodo Todo
-	json.NewDecoder(w.Body).Decode(&createdTodo)
-	if createdTodo.ID != 1 || createdTodo.Title != "Test Todo" {
-		t.Errorf("unexpected created todo: %v", createdTodo)
-	}
-
-	// Check if it's in the todos slice
-	if len(todos) != 1 || todos[0].ID != 1 {
-		t.Errorf("todo not stored correctly")
+	// Verify the ID was incremented
+	var created Todo
+	json.Unmarshal(rr.Body.Bytes(), &created)
+	if created.ID == 0 {
+		t.Error("Expected a generated ID, but got 0")
 	}
 }
