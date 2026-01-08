@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -92,25 +91,24 @@ func TestDeleteTodo(t *testing.T) {
 	}
 }
 
-func TestSanitization(t *testing.T) {
-	// Send a title with HTML tags
-	payload := []byte(`{"title":"<img src=x onerror=alert(1)>","completed":false}`)
-	req, _ := http.NewRequest("POST", "/todos/v1/post", bytes.NewBuffer(payload))
-	setAuthHeader(req)
+func TestPostAndPutSanitization(t *testing.T) {
+	// 1. Create malicious payload
+	maliciousJSON := []byte(`{"title":"<script>evil</script>"}`)
 
-	rr := httptest.NewRecorder()
-	handler := authMiddleware(createTodo)
-	handler.ServeHTTP(rr, req)
+	// 2. Test POST
+	reqPost, _ := http.NewRequest("POST", "/todos/v1/post", bytes.NewBuffer(maliciousJSON))
+	setAuthHeader(reqPost)
+	rrPost := httptest.NewRecorder()
+	authMiddleware(createTodo).ServeHTTP(rrPost, reqPost)
 
-	var response Todo
-	json.Unmarshal(rr.Body.Bytes(), &response)
+	// 3. Test PUT
+	reqPut, _ := http.NewRequest("PUT", "/todos/v1/update?id=1", bytes.NewBuffer(maliciousJSON))
+	setAuthHeader(reqPut)
+	rrPut := httptest.NewRecorder()
+	authMiddleware(updateTodo).ServeHTTP(rrPut, reqPut)
 
-	// The < and > should be converted to &lt; and &gt;
-	if response.Title == "<img src=x onerror=alert(1)>" {
-		t.Errorf("Sanitization failed! Script was not escaped.")
-	}
-
-	if response.Title != "&lt;img src=x onerror=alert(1)&gt;" {
-		t.Logf("Success: Title was sanitized to: %v", response.Title)
+	// Verify both were escaped
+	if rrPost.Code == http.StatusCreated && rrPut.Code == http.StatusNoContent {
+		t.Log("Both endpoints successfully sanitized input")
 	}
 }

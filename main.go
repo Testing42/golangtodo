@@ -37,6 +37,21 @@ func main() {
 	}
 }
 
+// NEW HELPER: Handles Size Limits and Sanitization for both POST and PUT
+func decodeAndSanitize(w http.ResponseWriter, r *http.Request) (Todo, error) {
+	// Limit body size to 1MB
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+
+	var t Todo
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		return t, err
+	}
+
+	// Sanitize string to prevent XSS (converts <script> to &lt;script&gt;)
+	t.Title = html.EscapeString(t.Title)
+	return t, nil
+}
+
 // Logic for GET only
 func getTodos(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -45,19 +60,11 @@ func getTodos(w http.ResponseWriter, r *http.Request) {
 
 // Logic for POST only
 func createTodo(w http.ResponseWriter, r *http.Request) {
-	// 1. LIMIT SIZE: Restrict request body to 1 MB
-	// This prevents "Payload Bombing" attacks.
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
-
-	var newTodo Todo
-	if err := json.NewDecoder(r.Body).Decode(&newTodo); err != nil {
-		http.Error(w, "Entity too large or invalid JSON", http.StatusRequestEntityTooLarge)
+	newTodo, err := decodeAndSanitize(w, r)
+	if err != nil {
+		http.Error(w, "Invalid input or payload too large", http.StatusBadRequest)
 		return
 	}
-
-	// 2. SANITIZE: Escape any HTML/Script tags
-	// If someone sends "<b>Milk</b>", it becomes "&lt;b&gt;Milk&lt;/b&gt;"
-	newTodo.Title = html.EscapeString(newTodo.Title)
 
 	newTodo.ID = nextID
 	nextID++
@@ -93,13 +100,19 @@ func getTodoByID(w http.ResponseWriter, r *http.Request) {
 // UPDATE: Change an existing Todo
 func updateTodo(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
-	var updatedData Todo
-	json.NewDecoder(r.Body).Decode(&updatedData)
+
+	updatedData, err := decodeAndSanitize(w, r)
+	if err != nil {
+		http.Error(w, "Invalid input or payload too large", http.StatusBadRequest)
+		return
+	}
 
 	for i, item := range todos {
 		if fmt.Sprintf("%d", item.ID) == idStr {
 			todos[i].Title = updatedData.Title
 			todos[i].Completed = updatedData.Completed
+
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(todos[i])
 			return
 		}
