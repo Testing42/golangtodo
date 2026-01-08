@@ -22,13 +22,13 @@ func main() {
 	http.HandleFunc("/todos/v1/get", getTodos)
 
 	// Unique URL for POST
-	http.HandleFunc("/todos/v1/post", createTodo)
+	http.HandleFunc("/todos/v1/post", authMiddleware(createTodo))
 
 	// New route for specific search
 	http.HandleFunc("/todos/v1/get/item", getTodoByID)
 
-	http.HandleFunc("/todos/v1/update", updateTodo)
-	http.HandleFunc("/todos/v1/delete", deleteTodo)
+	http.HandleFunc("/todos/v1/update", authMiddleware(updateTodo))
+	http.HandleFunc("/todos/v1/delete", authMiddleware(deleteTodo))
 
 	fmt.Println("Server running on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -111,4 +111,22 @@ func deleteTodo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Error(w, "Todo not found", http.StatusNotFound)
+}
+
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 1. Check for the secret key in the headers
+		apiKey := r.Header.Get("X-API-KEY")
+
+		// 2. If the key is wrong, stop here and return an error
+		if apiKey != "my-secure-key-123" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid or missing API Key"})
+			return
+		}
+
+		// 3. If the key is correct, call the "next" function (your actual logic)
+		next(w, r)
+	}
 }
