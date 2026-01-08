@@ -1,5 +1,7 @@
 package handlers
 
+import "sync"
+
 type Todo struct {
 	ID        int    `json:"id"`
 	Title     string `json:"title"`
@@ -7,5 +9,8 @@ type Todo struct {
 }
 
 // Global variables moved here (starting with Uppercase to be exported)
-var Todos []Todo
-var NextID = 1
+var (
+	Todos  []*Todo
+	NextID = 1
+	Mu     sync.RWMutex
+)

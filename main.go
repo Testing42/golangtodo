@@ -8,17 +8,34 @@ import (
 )
 
 func main() {
-	// Instead of one generic handler, we define specific ones
-	// if you want to keep the same URL for both:
+	// We use the same base URL for different actions
 
-	// Unique URL for POST
-	http.HandleFunc("/todos/v1/get", handlers.GetTodos)
-	// Unique URL for POST
-	http.HandleFunc("/todos/v1/post", handlers.AuthMiddleware(handlers.CreateTodo))
-	// New route for specific search
-	http.HandleFunc("/todos/v1/get/item", handlers.GetTodoByID)
-	http.HandleFunc("/todos/v1/update", handlers.AuthMiddleware(handlers.UpdateTodo))
-	http.HandleFunc("/todos/v1/delete", handlers.AuthMiddleware(handlers.DeleteTodo))
+	// GET (all) or POST (create)
+	http.HandleFunc("/todos/v1", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.GetTodos(w, r)
+		case http.MethodPost:
+			handlers.AuthMiddleware(handlers.CreateTodo)(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// GET (one), PUT (update), or DELETE (remove)
+	// Usually accessed via /todos/v1/item?id=1
+	http.HandleFunc("/todos/v1/item", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.GetTodoByID(w, r)
+		case http.MethodPut:
+			handlers.AuthMiddleware(handlers.UpdateTodo)(w, r)
+		case http.MethodDelete:
+			handlers.AuthMiddleware(handlers.DeleteTodo)(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	fmt.Println("Server running on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {

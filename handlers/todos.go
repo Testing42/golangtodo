@@ -2,28 +2,32 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"html"
 	"net/http"
+	"strconv"
 )
 
-// DecodeAndSanitize: Handles Size Limits and Sanitization for both POST and PUT
-func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (Todo, error) {
-	// Limit body size to 1MB
+// DecodeAndSanitize: Handles Size Limits and Sanitization
+func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+	t := &Todo{}
 
-	var t Todo
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		return t, err
+	// FIX: Pass 't' directly, not '&t', because 't' is already a pointer
+	if err := json.NewDecoder(r.Body).Decode(t); err != nil {
+		return nil, err
 	}
 
-	// Sanitize string to prevent XSS (converts <script> to &lt;script&gt;)
 	t.Title = html.EscapeString(t.Title)
 	return t, nil
 }
 
 // GetTodos: Logic for GET only
 func GetTodos(w http.ResponseWriter, r *http.Request) {
+	// UPDATED: Added RLock because reading a slice while
+	// another thread might be appending to it can cause a crash.
+	Mu.RLock()
+	defer Mu.RUnlock()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(Todos)
 }
@@ -36,9 +40,12 @@ func CreateTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// UPDATED: Added Lock to protect NextID and the Todos slice
+	Mu.Lock()
 	newTodo.ID = NextID
 	NextID++
 	Todos = append(Todos, newTodo)
+	Mu.Unlock() // Manual unlock here so we don't hold it during the JSON encoding
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -47,39 +54,47 @@ func CreateTodo(w http.ResponseWriter, r *http.Request) {
 
 // GetTodoByID: Logic for specific search
 func GetTodoByID(w http.ResponseWriter, r *http.Request) {
-	// 1. Get the "id" from the URL (?id=1)
 	idStr := r.URL.Query().Get("id")
-	if idStr == "" {
-		http.Error(w, "Missing id parameter", http.StatusBadRequest)
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
 		return
 	}
 
-	// 2. Look for the item in our list
+	Mu.RLock()
+	defer Mu.RUnlock()
+
 	for _, item := range Todos {
-		// We convert the ID to a string to compare easily
-		if fmt.Sprintf("%d", item.ID) == idStr {
+		if item.ID == id {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(item)
 			return
 		}
 	}
-
-	// 3. If not found
 	http.Error(w, "Todo not found", http.StatusNotFound)
 }
 
 // UpdateTodo: Change an existing Todo
 func UpdateTodo(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
-
-	updatedData, err := DecodeAndSanitize(w, r)
+	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		http.Error(w, "Invalid input or payload too large", http.StatusBadRequest)
+		http.Error(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 
+	updatedData, err := DecodeAndSanitize(w, r)
+	if err != nil {
+		http.Error(w, "Invalid input", http.StatusBadRequest)
+		return
+	}
+
+	Mu.Lock()
+	defer Mu.Unlock()
+
 	for i, item := range Todos {
-		if fmt.Sprintf("%d", item.ID) == idStr {
+		if item.ID == id {
 			Todos[i].Title = updatedData.Title
 			Todos[i].Completed = updatedData.Completed
 
@@ -94,12 +109,19 @@ func UpdateTodo(w http.ResponseWriter, r *http.Request) {
 // DeleteTodo: Remove a Todo
 func DeleteTodo(w http.ResponseWriter, r *http.Request) {
 	idStr := r.URL.Query().Get("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid ID format", http.StatusBadRequest)
+		return
+	}
+
+	Mu.Lock()
+	defer Mu.Unlock()
 
 	for i, item := range Todos {
-		if fmt.Sprintf("%d", item.ID) == idStr {
-			// Remove from slice
+		if item.ID == id {
 			Todos = append(Todos[:i], Todos[i+1:]...)
-			w.WriteHeader(http.StatusNoContent) // 204 means Success, no content to show
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 	}
