@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"html"
 	"net/http"
 	"strconv"
@@ -47,6 +48,13 @@ func CreateTodo(w http.ResponseWriter, r *http.Request) {
 	Todos = append(Todos, newTodo)
 	Mu.Unlock() // Manual unlock here so we don't hold it during the JSON encoding
 
+	// NEW: Persist to disk
+	if err := SaveToJSON(); err != nil {
+		fmt.Printf("Error saving data: %v\n", err)
+		// We don't necessarily want to fail the request if disk write fails,
+		// but we should log it professionally.
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(newTodo)
@@ -91,19 +99,31 @@ func UpdateTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	Mu.Lock()
-	defer Mu.Unlock()
-
+	found := false
+	var updatedItem *Todo
 	for i, item := range Todos {
 		if item.ID == id {
 			Todos[i].Title = updatedData.Title
 			Todos[i].Completed = updatedData.Completed
-
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Todos[i])
-			return
+			updatedItem = Todos[i]
+			found = true
+			break
 		}
 	}
-	http.Error(w, "Todo not found", http.StatusNotFound)
+	Mu.Unlock()
+
+	if !found {
+		http.Error(w, "Todo not found", http.StatusNotFound)
+		return
+	}
+
+	// NEW: Persist the update to disk
+	if err := SaveToJSON(); err != nil {
+		fmt.Printf("Error saving after update: %v\n", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(updatedItem)
 }
 
 // DeleteTodo: Remove a Todo
@@ -116,14 +136,25 @@ func DeleteTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	Mu.Lock()
-	defer Mu.Unlock()
-
+	found := false
 	for i, item := range Todos {
 		if item.ID == id {
 			Todos = append(Todos[:i], Todos[i+1:]...)
-			w.WriteHeader(http.StatusNoContent)
-			return
+			found = true
+			break // Exit loop once found
 		}
 	}
-	http.Error(w, "Todo not found", http.StatusNotFound)
+	Mu.Unlock() // Unlock before doing file I/O
+
+	if !found {
+		http.Error(w, "Todo not found", http.StatusNotFound)
+		return
+	}
+
+	// NEW: Save the updated slice to the JSON file
+	if err := SaveToJSON(); err != nil {
+		fmt.Printf("Error saving after delete: %v\n", err)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

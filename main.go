@@ -2,17 +2,20 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os" // 1. Import the os package
 
 	"github.com/Testing42/golangtodo/handlers"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// 2. Read the PORT from the environment
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080" // Default fallback if no PORT is set
+	// 2. Load the .env file
+	// If no filename is provided, it looks for ".env" in the current directory
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, using system default environment variables")
 	}
 
 	// GET (all) or POST (create)
@@ -41,8 +44,24 @@ func main() {
 		}
 	})
 
-	// 3. Use the dynamic port variable
-	fmt.Printf("Server running on :%s\n", port)
+	// NEW: Load existing todos from the JSON file
+	if err := handlers.LoadFromJSON(); err != nil {
+		fmt.Printf("Warning: Could not load data: %v\n", err)
+	}
+
+	// 3. Now os.Getenv will successfully find your API_KEY and PORT
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// Load existing data from the file determined by GetFileName()
+	fmt.Printf("Starting server on port %s using data file: %s\n", port, handlers.GetFileName())
+
+	if err := handlers.LoadFromJSON(); err != nil {
+		log.Printf("Note: Starting with fresh data (%v)", err)
+	}
+
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		panic(err)
 	}
