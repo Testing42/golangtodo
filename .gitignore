@@ -1,1 +1,22 @@
+# Binaries and executable files
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Environment variables (Secrets)
 .env
+
+# Application data (JSON Database)
+todos.json
+todos.json.tmp
+test_todos.json
+
+# Test artifacts
+*.test
+
+# IDE specific files
+.vscode/
+.idea/
