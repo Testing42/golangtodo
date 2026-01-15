@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,84 +12,96 @@ import (
 	"github.com/Testing42/golangtodo/handlers"
 )
 
-// Define the test filename constant to avoid "magic strings"
-const testDB = "test_todos.json"
-
-// setupAndTeardown prepares the environment and ensures no stale test data exists
-func setupAndTeardown() {
-	// 1. Set the environment variable so getDBPath() in store.go picks it up
-	os.Setenv("DB_FILE", testDB)
-	os.Setenv("API_KEY", "test-secret-key")
-
-	// 2. Reset global memory state
-	handlers.Todos = []*handlers.Todo{}
-	handlers.NextID = 1
-
-	// 3. Remove any leftover test files from previous runs
-	os.Remove(testDB)
-	os.Remove(testDB + ".tmp")
-}
+// We use a separate database file for testing
+const testDBFile = "test_todos.db"
 
 func TestMain(m *testing.M) {
-	setupAndTeardown()
+	// 1. Setup: Set API Key for middleware
+	os.Setenv("API_KEY", "test-secret-key")
 
-	// Run all tests in the package
+	// 2. Initialize the Test Database
+	if err := handlers.InitDB(testDBFile); err != nil {
+		panic("Failed to connect to test database: " + err.Error())
+	}
+
+	// 3. Run the tests
 	code := m.Run()
 
-	// Final cleanup: remove test artifacts so the directory stays clean
-	os.Remove(testDB)
-	os.Remove(testDB + ".tmp")
+	// 4. Teardown: Close connection and remove test file
+	handlers.DB.Close()
+	os.Remove(testDBFile)
 
 	os.Exit(code)
 }
 
-// Helper to set headers using the test secret
+// Helper to clear the table between tests to ensure a clean slate
+func clearTable() {
+	handlers.DB.Exec("DELETE FROM todos")
+	// Reset the auto-increment counter in SQLite
+	handlers.DB.Exec("DELETE FROM sqlite_sequence WHERE name='todos'")
+}
+
+// Helper to set auth headers
 func setAuthHeader(req *http.Request) {
 	req.Header.Set("X-API-KEY", "test-secret-key")
 }
 
 func TestPersistence(t *testing.T) {
-	// Setup: Add a Todo and manually trigger a save
-	handlers.Todos = []*handlers.Todo{{ID: 1, Title: "Test Persistence", Completed: false}}
-	err := handlers.SaveToJSON()
+	clearTable()
+
+	// 1. Setup data in DB
+	_, err := handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", "Test Persistence", false)
 	if err != nil {
-		t.Fatalf("Failed to save to %s: %v", testDB, err)
+		t.Fatalf("Failed to insert test data: %v", err)
 	}
 
-	// Simulating a restart: Clear memory
-	handlers.Todos = []*handlers.Todo{}
+	// 2. Call the handler
+	req, _ := http.NewRequest("GET", "/todos/v1", nil)
+	rr := httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
 
-	// Load from the test file
-	err = handlers.LoadFromJSON()
+	// 3. THE BEST METHOD: Unmarshal the response body into a slice
+	var actualTodos []handlers.Todo
+	err = json.Unmarshal(rr.Body.Bytes(), &actualTodos)
 	if err != nil {
-		t.Fatalf("Failed to load from %s: %v", testDB, err)
+		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
 
-	// Verify the data survived
-	if len(handlers.Todos) != 1 || handlers.Todos[0].Title != "Test Persistence" {
-		t.Errorf("Data did not persist correctly. Got: %v", handlers.Todos)
+	// 4. Perform logical checks on the data
+	if len(actualTodos) != 1 {
+		t.Errorf("Expected 1 todo, got %d", len(actualTodos))
+	}
+
+	if actualTodos[0].Title != "Test Persistence" {
+		t.Errorf("Expected title 'Test Persistence', got '%s'", actualTodos[0].Title)
+	}
+
+	if actualTodos[0].ID != 1 {
+		t.Errorf("Expected ID 1, got %d", actualTodos[0].ID)
 	}
 }
 
-func TestCreateTodoWithPersistence(t *testing.T) {
-	// Ensure a clean start for this specific test
-	handlers.Todos = []*handlers.Todo{}
-	handlers.NextID = 1
-	os.Remove(testDB)
+func TestCreateTodoWithSQL(t *testing.T) {
+	clearTable()
 
-	payload := []byte(`{"title":"Save Me To Disk","completed":false}`)
+	payload := []byte(`{"title":"Save Me To SQLite","completed":false}`)
 	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer(payload))
 	setAuthHeader(req)
 	rr := httptest.NewRecorder()
 
+	// Use the actual AuthMiddleware and Handler
 	handlers.AuthMiddleware(handlers.CreateTodo).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusCreated {
 		t.Errorf("Expected 201, got %v", rr.Code)
 	}
 
-	// Check for the TEST file, not the production file
-	if _, err := os.Stat(testDB); os.IsNotExist(err) {
-		t.Errorf("%s was not created after POST request", testDB)
+	// 4. Verify the record actually exists in the SQL table
+	var title string
+	err := handlers.DB.QueryRow("SELECT title FROM todos WHERE id = 1").Scan(&title)
+	if err == sql.ErrNoRows {
+		t.Errorf("Record was not found in the database after POST")
+	} else if title != "Save Me To SQLite" {
+		t.Errorf("Expected title 'Save Me To SQLite', got '%s'", title)
 	}
 }
