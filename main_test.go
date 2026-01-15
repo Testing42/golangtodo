@@ -105,3 +105,50 @@ func TestCreateTodoWithSQL(t *testing.T) {
 		t.Errorf("Expected title 'Save Me To SQLite', got '%s'", title)
 	}
 }
+
+// Add this function to your main_test.go file
+
+func TestSearchTodos(t *testing.T) {
+	clearTable()
+
+	// 1. Setup: Insert multiple items to search through
+	items := []string{"Buy Milk", "Buy Bread", "Wash Car"}
+	for _, title := range items {
+		_, err := handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
+		if err != nil {
+			t.Fatalf("Failed to setup search data: %v", err)
+		}
+	}
+
+	// 2. Scenario A: Search for "Buy" (should return 2 items)
+	req, _ := http.NewRequest("GET", "/todos/v1?search=Buy", nil)
+	rr := httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
+
+	var searchResults []handlers.Todo
+	json.Unmarshal(rr.Body.Bytes(), &searchResults)
+
+	if len(searchResults) != 2 {
+		t.Errorf("Expected 2 search results for 'Buy', got %d", len(searchResults))
+	}
+
+	// 3. Scenario B: Search for "Milk" (should return 1 item)
+	req, _ = http.NewRequest("GET", "/todos/v1?search=Milk", nil)
+	rr = httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
+
+	json.Unmarshal(rr.Body.Bytes(), &searchResults)
+	if len(searchResults) != 1 || searchResults[0].Title != "Buy Milk" {
+		t.Errorf("Expected 'Buy Milk', got %v", searchResults)
+	}
+
+	// 4. Scenario C: Search for "Elephant" (should return 0 items)
+	req, _ = http.NewRequest("GET", "/todos/v1?search=Elephant", nil)
+	rr = httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
+
+	json.Unmarshal(rr.Body.Bytes(), &searchResults)
+	if len(searchResults) != 0 {
+		t.Errorf("Expected 0 results for 'Elephant', got %d", len(searchResults))
+	}
+}
