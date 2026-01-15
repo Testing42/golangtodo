@@ -1,0 +1,28 @@
+name: Go CI
+
+on:
+  push:
+    # This tells GitHub to run the test whenever you push to either branch
+    branches: [ sqllite-version ]
+  pull_request:
+    branches: [ sqllite-version ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+
+      - name: Install dependencies
+        run: go mod tidy
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: Run Benchmarks
+        run: go test -bench=. -benchmem
