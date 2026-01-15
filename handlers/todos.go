@@ -4,15 +4,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"html"
+	"log/slog" // NEW: Structured logging
 	"net/http"
 	"strconv"
 )
 
-type TodoResponse struct {
-	TotalCount int    `json:"total_count"`
-	Page       int    `json:"page"`
-	Limit      int    `json:"limit"`
-	Data       []Todo `json:"data"`
+// sendJSONError: Helper to return consistent JSON error objects
+func sendJSONError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": message,
+		"code":  code,
+	})
 }
 
 // DecodeAndSanitize: Handles Size Limits and Sanitization
@@ -28,68 +32,57 @@ func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 
 // GetTodos: Logic for GET all, Search by title, and Pagination with Metadata
 func GetTodos(w http.ResponseWriter, r *http.Request) {
-	// NEW: Check for a search query parameter (e.g., /todos/v1?search=milk)
 	searchTerm := r.URL.Query().Get("search")
-
-	// NEW: Get Pagination parameters from URL (e.g., /todos/v1?page=2&limit=10)
 	pageStr := r.URL.Query().Get("page")
 	limitStr := r.URL.Query().Get("limit")
 
-	// NEW: Set Defaults for Pagination
 	page, _ := strconv.Atoi(pageStr)
 	if page < 1 {
 		page = 1
 	}
 
 	limit, _ := strconv.Atoi(limitStr)
-	// Default to 10 items, max 100 for safety
 	if limit < 1 || limit > 100 {
 		limit = 10
 	}
 
-	// NEW: Calculate Offset (How many items to skip)
 	offset := (page - 1) * limit
 
-	// --- STEP 1: Get the Total Count ---
-	// We need this so the client knows how many items exist in total across all pages
 	var totalCount int
 	countQuery := "SELECT COUNT(*) FROM todos WHERE title LIKE ?"
 	err := DB.QueryRow(countQuery, "%"+searchTerm+"%").Scan(&totalCount)
 	if err != nil {
-		http.Error(w, "Database error counting items", http.StatusInternalServerError)
+		slog.Error("Count query failed", "error", err)
+		sendJSONError(w, "Database error counting items", http.StatusInternalServerError)
 		return
 	}
 
-	// --- STEP 2: Get the Paginated Data ---
 	var rows *sql.Rows
 	if searchTerm != "" {
-		// UPDATED: Use LIKE for partial matches with LIMIT and OFFSET
 		query := "SELECT id, title, completed, created_at FROM todos WHERE title LIKE ? LIMIT ? OFFSET ?"
 		rows, err = DB.Query(query, "%"+searchTerm+"%", limit, offset)
 	} else {
-		// UPDATED: Get all items with LIMIT and OFFSET
 		query := "SELECT id, title, completed, created_at FROM todos LIMIT ? OFFSET ?"
 		rows, err = DB.Query(query, limit, offset)
 	}
 
 	if err != nil {
-		http.Error(w, "Database error fetching data", http.StatusInternalServerError)
+		slog.Error("Fetch query failed", "error", err)
+		sendJSONError(w, "Database error fetching data", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	// Initialize as empty slice so it returns [] instead of null in JSON
 	todos := []Todo{}
 	for rows.Next() {
 		var t Todo
 		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt); err != nil {
+			slog.Warn("Failed to scan row", "error", err)
 			continue
 		}
 		todos = append(todos, t)
 	}
 
-	// --- STEP 3: Wrap in TodoResponse ---
-	// This is the "Metadata Wrapper" that makes the API explicit
 	response := TodoResponse{
 		TotalCount: totalCount,
 		Page:       page,
@@ -105,24 +98,25 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 func CreateTodo(w http.ResponseWriter, r *http.Request) {
 	newTodo, err := DecodeAndSanitize(w, r)
 	if err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
+		sendJSONError(w, "Invalid input format", http.StatusBadRequest)
 		return
 	}
 
 	res, err := DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", newTodo.Title, newTodo.Completed)
 	if err != nil {
-		http.Error(w, "Failed to save", http.StatusInternalServerError)
+		slog.Error("Insert failed", "error", err)
+		sendJSONError(w, "Failed to save to database", http.StatusInternalServerError)
 		return
 	}
 
 	id, _ := res.LastInsertId()
 
-	// FIXED: Fetch the record back from the DB to get the actual ID and CreatedAt timestamp
 	err = DB.QueryRow("SELECT id, title, completed, created_at FROM todos WHERE id = ?", id).
 		Scan(&newTodo.ID, &newTodo.Title, &newTodo.Completed, &newTodo.CreatedAt)
 
 	if err != nil {
-		http.Error(w, "Saved but failed to retrieve full record", http.StatusInternalServerError)
+		slog.Error("Retrieve after insert failed", "id", id, "error", err)
+		sendJSONError(w, "Internal error retrieving record", http.StatusInternalServerError)
 		return
 	}
 
@@ -135,22 +129,20 @@ func CreateTodo(w http.ResponseWriter, r *http.Request) {
 func GetTodoByID(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.URL.Query().Get("id"))
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		sendJSONError(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 
 	var t Todo
-	// 1. ADD 'created_at' to the SELECT statement
 	query := "SELECT id, title, completed, created_at FROM todos WHERE id = ?"
-
-	// 2. ADD '&t.CreatedAt' to the Scan method
 	err = DB.QueryRow(query, id).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt)
 
 	if err == sql.ErrNoRows {
-		http.Error(w, "Todo not found", http.StatusNotFound)
+		sendJSONError(w, "Todo not found", http.StatusNotFound)
 		return
 	} else if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		slog.Error("GetByID scan failed", "id", id, "error", err)
+		sendJSONError(w, "Internal database error", http.StatusInternalServerError)
 		return
 	}
 
@@ -162,24 +154,25 @@ func GetTodoByID(w http.ResponseWriter, r *http.Request) {
 func UpdateTodo(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.URL.Query().Get("id"))
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		sendJSONError(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 
 	updatedData, err := DecodeAndSanitize(w, r)
 	if err != nil {
-		http.Error(w, "Invalid input", http.StatusBadRequest)
+		sendJSONError(w, "Invalid input format", http.StatusBadRequest)
 		return
 	}
 
 	res, err := DB.Exec("UPDATE todos SET title = ?, completed = ? WHERE id = ?", updatedData.Title, updatedData.Completed, id)
 	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		slog.Error("Update failed", "id", id, "error", err)
+		sendJSONError(w, "Database update error", http.StatusInternalServerError)
 		return
 	}
 
 	if rows, _ := res.RowsAffected(); rows == 0 {
-		http.Error(w, "Todo not found", http.StatusNotFound)
+		sendJSONError(w, "Todo not found", http.StatusNotFound)
 		return
 	}
 
@@ -192,13 +185,19 @@ func UpdateTodo(w http.ResponseWriter, r *http.Request) {
 func DeleteTodo(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.URL.Query().Get("id"))
 	if err != nil {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		sendJSONError(w, "Invalid ID format", http.StatusBadRequest)
 		return
 	}
 
 	res, err := DB.Exec("DELETE FROM todos WHERE id = ?", id)
+	if err != nil {
+		slog.Error("Delete failed", "id", id, "error", err)
+		sendJSONError(w, "Database delete error", http.StatusInternalServerError)
+		return
+	}
+
 	if rows, _ := res.RowsAffected(); rows == 0 {
-		http.Error(w, "Todo not found", http.StatusNotFound)
+		sendJSONError(w, "Todo not found", http.StatusNotFound)
 		return
 	}
 

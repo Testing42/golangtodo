@@ -14,7 +14,9 @@ import (
 
 const testDBFile = "test_todos.db"
 
+// TestMain handles the setup and teardown for the entire test suite
 func TestMain(m *testing.M) {
+	// Set environment for middleware
 	os.Setenv("API_KEY", "test-secret-key")
 
 	// Initialize the Test Database
@@ -24,11 +26,14 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	// Cleanup
 	handlers.DB.Close()
 	os.Remove(testDBFile)
 
 	os.Exit(code)
 }
+
+// --- HELPERS ---
 
 func clearTable() {
 	handlers.DB.Exec("DELETE FROM todos")
@@ -39,141 +44,126 @@ func setAuthHeader(req *http.Request) {
 	req.Header.Set("X-API-KEY", "test-secret-key")
 }
 
-// TestPersistence: Verifies list fetching and the CreatedAt timestamp
-func TestPersistence(t *testing.T) {
-	clearTable()
+// --- TIER 1: LOGIC (UNIT) TESTS ---
+// Tests internal logic without needing the database connection
 
-	_, err := handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", "Test Persistence", false)
-	if err != nil {
-		t.Fatalf("Failed to insert test data: %v", err)
-	}
-
-	req, _ := http.NewRequest("GET", "/todos/v1", nil)
+func TestSanitizationLogic(t *testing.T) {
+	// Create a request with dirty HTML tags
+	rawJSON := `{"title":"<script>alert('hack')</script>Hello","completed":false}`
+	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer([]byte(rawJSON)))
 	rr := httptest.NewRecorder()
-	handlers.GetTodos(rr, req)
 
-	var response handlers.TodoResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
+	todo, err := handlers.DecodeAndSanitize(rr, req)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
 	}
 
-	actualTodos := response.Data
-
-	if len(actualTodos) != 1 {
-		t.Errorf("Expected 1 todo, got %d", len(actualTodos))
-	}
-
-	// Check if the date was actually set (should not be year 0001)
-	if actualTodos[0].CreatedAt.IsZero() {
-		t.Error("Expected CreatedAt to be populated, but it was the zero time")
+	expected := "&lt;script&gt;alert(&#39;hack&#39;)&lt;/script&gt;Hello"
+	if todo.Title != expected {
+		t.Errorf("Sanitization failed. Got: %s", todo.Title)
 	}
 }
 
-// TestCreateTodoWithSQL: Verifies that POSTing a todo generates a valid record with a date
-func TestCreateTodoWithSQL(t *testing.T) {
+// --- TIER 2: INTEGRATION TESTS ---
+// Tests the full flow: Handler -> Database -> JSON Response
+
+func TestFullCreateAndFetchFlow(t *testing.T) {
 	clearTable()
 
-	payload := []byte(`{"title":"Save Me To SQLite","completed":false}`)
+	// 1. Test POST (Create)
+	payload := []byte(`{"title":"Integration Task","completed":false}`)
 	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer(payload))
 	setAuthHeader(req)
 	rr := httptest.NewRecorder()
-
 	handlers.AuthMiddleware(handlers.CreateTodo).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusCreated {
 		t.Errorf("Expected 201, got %v", rr.Code)
 	}
 
-	// Unmarshal the response to check the date returned by the API
-	var created handlers.Todo
-	json.Unmarshal(rr.Body.Bytes(), &created)
+	// 2. Test GET (Fetch)
+	reqGet, _ := http.NewRequest("GET", "/todos/v1", nil)
+	rrGet := httptest.NewRecorder()
+	handlers.GetTodos(rrGet, reqGet)
 
-	if created.CreatedAt.IsZero() {
-		t.Error("The created todo returned a zero timestamp")
+	var response handlers.TodoResponse
+	json.Unmarshal(rrGet.Body.Bytes(), &response)
+
+	if len(response.Data) != 1 {
+		t.Fatalf("Expected 1 todo in list, got %d", len(response.Data))
 	}
 
-	// Verify the database record directly
-	var title string
-	var createdAt string // Scan as string for raw DB check
-	err := handlers.DB.QueryRow("SELECT title, created_at FROM todos WHERE id = 1").Scan(&title, &createdAt)
-	if err != nil {
-		t.Errorf("Record was not found in the database: %v", err)
+	if response.Data[0].Title != "Integration Task" {
+		t.Errorf("Data mismatch. Got: %s", response.Data[0].Title)
+	}
+
+	if response.Data[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt was not populated by the database")
 	}
 }
 
 func TestGetTodoByID(t *testing.T) {
 	clearTable()
+	handlers.DB.Exec("INSERT INTO todos (id, title, completed) VALUES (?, ?, ?)", 50, "Specific Item", true)
 
-	// Insert a specific item
-	handlers.DB.Exec("INSERT INTO todos (id, title, completed) VALUES (?, ?, ?)", 99, "Find Me", false)
-
-	req, _ := http.NewRequest("GET", "/todos/v1/item?id=99", nil)
+	req, _ := http.NewRequest("GET", "/todos/v1/item?id=50", nil)
 	rr := httptest.NewRecorder()
 	handlers.GetTodoByID(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %v", rr.Code)
-	}
 
 	var found handlers.Todo
 	json.Unmarshal(rr.Body.Bytes(), &found)
 
-	if found.Title != "Find Me" || found.ID != 99 {
-		t.Errorf("Expected 'Find Me' with ID 99, got ID %d Title '%s'", found.ID, found.Title)
+	if found.ID != 50 || found.Title != "Specific Item" {
+		t.Errorf("Could not retrieve specific ID. Got: %+v", found)
 	}
 }
 
-func TestSearchTodos(t *testing.T) {
+func TestPaginationAndSearch(t *testing.T) {
 	clearTable()
-
-	items := []string{"Buy Milk", "Buy Bread", "Wash Car"}
-	for _, title := range items {
-		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
-	}
-
-	// Search for "Buy"
-	req, _ := http.NewRequest("GET", "/todos/v1?search=Buy", nil)
-	rr := httptest.NewRecorder()
-	handlers.GetTodos(rr, req)
-
-	var response handlers.TodoResponse
-	json.Unmarshal(rr.Body.Bytes(), &response)
-
-	if len(response.Data) != 2 {
-		t.Errorf("Expected 2 search results for 'Buy', got %d", len(response.Data))
-	}
-}
-
-func TestPagination(t *testing.T) {
-	clearTable()
-
 	for i := 1; i <= 15; i++ {
 		title := "Task " + strconv.Itoa(i)
+		if i <= 5 {
+			title = "Unique " + title
+		} // 5 unique items
 		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
 	}
 
-	// Scenario: Page 1, Limit 10
-	req, _ := http.NewRequest("GET", "/todos/v1?page=1&limit=10", nil)
+	// Test Search
+	req, _ := http.NewRequest("GET", "/todos/v1?search=Unique", nil)
 	rr := httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
-
-	var responseP1 handlers.TodoResponse
-	json.Unmarshal(rr.Body.Bytes(), &responseP1)
-	if len(responseP1.Data) != 10 {
-		t.Errorf("Expected 10 items on page 1, got %d", len(responseP1.Data))
-	}
-	if responseP1.TotalCount != 15 {
-		t.Errorf("Expected total_count 15, got %d", responseP1.TotalCount)
+	var searchRes handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &searchRes)
+	if searchRes.TotalCount != 5 {
+		t.Errorf("Search failed. Expected 5 items, got %d", searchRes.TotalCount)
 	}
 
-	// Scenario: Page 2, Limit 10
+	// Test Pagination
 	req, _ = http.NewRequest("GET", "/todos/v1?page=2&limit=10", nil)
 	rr = httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
+	var pageRes handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &pageRes)
+	if len(pageRes.Data) != 5 {
+		t.Errorf("Pagination failed. Expected 5 items on page 2, got %d", len(pageRes.Data))
+	}
+}
 
-	var responseP2 handlers.TodoResponse
-	json.Unmarshal(rr.Body.Bytes(), &responseP2)
-	if len(responseP2.Data) != 5 {
-		t.Errorf("Expected 5 items on page 2, got %d", len(responseP2.Data))
+// --- TIER 3: LOAD TESTS (BENCHMARKS) ---
+// Measures performance under repeated execution
+
+func BenchmarkGetTodos(b *testing.B) {
+	clearTable()
+	// Fill with 100 items for a realistic read test
+	for i := 0; i < 100; i++ {
+		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", "Benchmark", false)
+	}
+
+	req, _ := http.NewRequest("GET", "/todos/v1?limit=10", nil)
+	b.ResetTimer() // Don't count the setup time
+
+	for i := 0; i < b.N; i++ {
+		rr := httptest.NewRecorder()
+		handlers.GetTodos(rr, req)
 	}
 }

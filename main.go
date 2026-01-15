@@ -2,8 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog" // NEW: Structured logging
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,9 +16,14 @@ import (
 func main() {
 	godotenv.Load()
 
+	// NEW: Initialize Structured JSON Logger
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	// 1. Initialize SQLite Database
 	if err := handlers.InitDB("./todos.db"); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		slog.Error("Failed to initialize database", "error", err)
+		os.Exit(1)
 	}
 	defer handlers.DB.Close()
 
@@ -34,6 +38,8 @@ func main() {
 		case http.MethodPost:
 			handlers.AuthMiddleware(handlers.CreateTodo)(w, r)
 		default:
+			// Using http.Error here is okay for "Method Not Allowed"
+			// but you could use the JSON helper here too!
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
@@ -65,21 +71,23 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		fmt.Printf("Starting server on port %s using SQLite database.\n", port)
+		slog.Info("Starting server", "port", port, "db", "sqlite")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe error: %v", err)
+			slog.Error("ListenAndServe error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-stop
-	fmt.Println("\nShutting down gracefully...")
+	slog.Info("Shutting down gracefully...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		slog.Error("Server forced to shutdown", "error", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("Server exiting. Goodbye!")
+	slog.Info("Server exiting. Goodbye!")
 }
