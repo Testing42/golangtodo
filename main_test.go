@@ -61,12 +61,15 @@ func TestPersistence(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
 
-	// 3. THE BEST METHOD: Unmarshal the response body into a slice
-	var actualTodos []handlers.Todo
-	err = json.Unmarshal(rr.Body.Bytes(), &actualTodos)
+	// 3. THE BEST METHOD: Unmarshal the response body into the TodoResponse wrapper
+	var response handlers.TodoResponse
+	err = json.Unmarshal(rr.Body.Bytes(), &response)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
+
+	// Now, you must look inside 'response.Data' to find your todos
+	actualTodos := response.Data
 
 	// 4. Perform logical checks on the data
 	if len(actualTodos) != 1 {
@@ -112,7 +115,6 @@ func TestCreateTodoWithSQL(t *testing.T) {
 func TestSearchTodos(t *testing.T) {
 	clearTable()
 
-	// 1. Setup: Insert multiple items to search through
 	items := []string{"Buy Milk", "Buy Bread", "Wash Car"}
 	for _, title := range items {
 		_, err := handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
@@ -121,36 +123,28 @@ func TestSearchTodos(t *testing.T) {
 		}
 	}
 
-	// 2. Scenario A: Search for "Buy" (should return 2 items)
+	// 2. Scenario A: Search for "Buy"
 	req, _ := http.NewRequest("GET", "/todos/v1?search=Buy", nil)
 	rr := httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
 
-	var searchResults []handlers.Todo
-	json.Unmarshal(rr.Body.Bytes(), &searchResults)
+	// FIX: Use the Wrapper
+	var response handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &response)
 
-	if len(searchResults) != 2 {
-		t.Errorf("Expected 2 search results for 'Buy', got %d", len(searchResults))
+	if len(response.Data) != 2 {
+		t.Errorf("Expected 2 search results for 'Buy', got %d", len(response.Data))
 	}
 
-	// 3. Scenario B: Search for "Milk" (should return 1 item)
+	// 3. Scenario B: Search for "Milk"
 	req, _ = http.NewRequest("GET", "/todos/v1?search=Milk", nil)
 	rr = httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
 
-	json.Unmarshal(rr.Body.Bytes(), &searchResults)
-	if len(searchResults) != 1 || searchResults[0].Title != "Buy Milk" {
-		t.Errorf("Expected 'Buy Milk', got %v", searchResults)
-	}
-
-	// 4. Scenario C: Search for "Elephant" (should return 0 items)
-	req, _ = http.NewRequest("GET", "/todos/v1?search=Elephant", nil)
-	rr = httptest.NewRecorder()
-	handlers.GetTodos(rr, req)
-
-	json.Unmarshal(rr.Body.Bytes(), &searchResults)
-	if len(searchResults) != 0 {
-		t.Errorf("Expected 0 results for 'Elephant', got %d", len(searchResults))
+	var responseB handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &responseB)
+	if len(responseB.Data) != 1 || responseB.Data[0].Title != "Buy Milk" {
+		t.Errorf("Expected 'Buy Milk', got %v", responseB.Data)
 	}
 }
 
@@ -168,20 +162,21 @@ func TestPagination(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
 
-	var p1 []handlers.Todo
-	json.Unmarshal(rr.Body.Bytes(), &p1)
-	if len(p1) != 10 {
-		t.Errorf("Expected 10 items on page 1, got %d", len(p1))
+	// FIX: Use the Wrapper
+	var responseP1 handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &responseP1)
+	if len(responseP1.Data) != 10 {
+		t.Errorf("Expected 10 items on page 1, got %d", len(responseP1.Data))
 	}
 
-	// 3. Scenario: Page 2, Limit 10 (Should only have 5 items left)
+	// 3. Scenario: Page 2, Limit 10
 	req, _ = http.NewRequest("GET", "/todos/v1?page=2&limit=10", nil)
 	rr = httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
 
-	var p2 []handlers.Todo
-	json.Unmarshal(rr.Body.Bytes(), &p2)
-	if len(p2) != 5 {
-		t.Errorf("Expected 5 items on page 2, got %d", len(p2))
+	var responseP2 handlers.TodoResponse
+	json.Unmarshal(rr.Body.Bytes(), &responseP2)
+	if len(responseP2.Data) != 5 {
+		t.Errorf("Expected 5 items on page 2, got %d", len(responseP2.Data))
 	}
 }

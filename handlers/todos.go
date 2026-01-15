@@ -8,6 +8,13 @@ import (
 	"strconv"
 )
 
+type TodoResponse struct {
+	TotalCount int    `json:"total_count"`
+	Page       int    `json:"page"`
+	Limit      int    `json:"limit"`
+	Data       []Todo `json:"data"`
+}
+
 // DecodeAndSanitize: Handles Size Limits and Sanitization
 func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
@@ -19,7 +26,7 @@ func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 	return t, nil
 }
 
-// GetTodos: Logic for GET all, Search by title, and Pagination
+// GetTodos: Logic for GET all, Search by title, and Pagination with Metadata
 func GetTodos(w http.ResponseWriter, r *http.Request) {
 	// NEW: Check for a search query parameter (e.g., /todos/v1?search=milk)
 	searchTerm := r.URL.Query().Get("search")
@@ -43,12 +50,20 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 	// NEW: Calculate Offset (How many items to skip)
 	offset := (page - 1) * limit
 
-	var rows *sql.Rows
-	var err error
+	// --- STEP 1: Get the Total Count ---
+	// We need this so the client knows how many items exist in total across all pages
+	var totalCount int
+	countQuery := "SELECT COUNT(*) FROM todos WHERE title LIKE ?"
+	err := DB.QueryRow(countQuery, "%"+searchTerm+"%").Scan(&totalCount)
+	if err != nil {
+		http.Error(w, "Database error counting items", http.StatusInternalServerError)
+		return
+	}
 
+	// --- STEP 2: Get the Paginated Data ---
+	var rows *sql.Rows
 	if searchTerm != "" {
 		// UPDATED: Use LIKE for partial matches with LIMIT and OFFSET
-		// The % wildcards allow matching the term anywhere in the title.
 		query := "SELECT id, title, completed FROM todos WHERE title LIKE ? LIMIT ? OFFSET ?"
 		rows, err = DB.Query(query, "%"+searchTerm+"%", limit, offset)
 	} else {
@@ -58,7 +73,7 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		http.Error(w, "Database error fetching data", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -73,8 +88,17 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 		todos = append(todos, t)
 	}
 
+	// --- STEP 3: Wrap in TodoResponse ---
+	// This is the "Metadata Wrapper" that makes the API explicit
+	response := TodoResponse{
+		TotalCount: totalCount,
+		Page:       page,
+		Limit:      limit,
+		Data:       todos,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(todos)
+	json.NewEncoder(w).Encode(response)
 }
 
 // CreateTodo: Logic for POST
