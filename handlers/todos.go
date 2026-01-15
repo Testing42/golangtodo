@@ -64,11 +64,11 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 	var rows *sql.Rows
 	if searchTerm != "" {
 		// UPDATED: Use LIKE for partial matches with LIMIT and OFFSET
-		query := "SELECT id, title, completed FROM todos WHERE title LIKE ? LIMIT ? OFFSET ?"
+		query := "SELECT id, title, completed, created_at FROM todos WHERE title LIKE ? LIMIT ? OFFSET ?"
 		rows, err = DB.Query(query, "%"+searchTerm+"%", limit, offset)
 	} else {
 		// UPDATED: Get all items with LIMIT and OFFSET
-		query := "SELECT id, title, completed FROM todos LIMIT ? OFFSET ?"
+		query := "SELECT id, title, completed, created_at FROM todos LIMIT ? OFFSET ?"
 		rows, err = DB.Query(query, limit, offset)
 	}
 
@@ -82,7 +82,7 @@ func GetTodos(w http.ResponseWriter, r *http.Request) {
 	todos := []Todo{}
 	for rows.Next() {
 		var t Todo
-		if err := rows.Scan(&t.ID, &t.Title, &t.Completed); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt); err != nil {
 			continue
 		}
 		todos = append(todos, t)
@@ -116,7 +116,15 @@ func CreateTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, _ := res.LastInsertId()
-	newTodo.ID = int(id)
+
+	// FIXED: Fetch the record back from the DB to get the actual ID and CreatedAt timestamp
+	err = DB.QueryRow("SELECT id, title, completed, created_at FROM todos WHERE id = ?", id).
+		Scan(&newTodo.ID, &newTodo.Title, &newTodo.Completed, &newTodo.CreatedAt)
+
+	if err != nil {
+		http.Error(w, "Saved but failed to retrieve full record", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -132,9 +140,17 @@ func GetTodoByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var t Todo
-	err = DB.QueryRow("SELECT id, title, completed FROM todos WHERE id = ?", id).Scan(&t.ID, &t.Title, &t.Completed)
+	// 1. ADD 'created_at' to the SELECT statement
+	query := "SELECT id, title, completed, created_at FROM todos WHERE id = ?"
+
+	// 2. ADD '&t.CreatedAt' to the Scan method
+	err = DB.QueryRow(query, id).Scan(&t.ID, &t.Title, &t.Completed, &t.CreatedAt)
+
 	if err == sql.ErrNoRows {
 		http.Error(w, "Todo not found", http.StatusNotFound)
+		return
+	} else if err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
 
