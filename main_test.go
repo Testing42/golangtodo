@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/Testing42/golangtodo/handlers"
@@ -150,5 +151,37 @@ func TestSearchTodos(t *testing.T) {
 	json.Unmarshal(rr.Body.Bytes(), &searchResults)
 	if len(searchResults) != 0 {
 		t.Errorf("Expected 0 results for 'Elephant', got %d", len(searchResults))
+	}
+}
+
+func TestPagination(t *testing.T) {
+	clearTable()
+
+	// 1. Setup: Insert 15 items
+	for i := 1; i <= 15; i++ {
+		title := "Task " + strconv.Itoa(i)
+		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
+	}
+
+	// 2. Scenario: Page 1, Limit 10
+	req, _ := http.NewRequest("GET", "/todos/v1?page=1&limit=10", nil)
+	rr := httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
+
+	var p1 []handlers.Todo
+	json.Unmarshal(rr.Body.Bytes(), &p1)
+	if len(p1) != 10 {
+		t.Errorf("Expected 10 items on page 1, got %d", len(p1))
+	}
+
+	// 3. Scenario: Page 2, Limit 10 (Should only have 5 items left)
+	req, _ = http.NewRequest("GET", "/todos/v1?page=2&limit=10", nil)
+	rr = httptest.NewRecorder()
+	handlers.GetTodos(rr, req)
+
+	var p2 []handlers.Todo
+	json.Unmarshal(rr.Body.Bytes(), &p2)
+	if len(p2) != 5 {
+		t.Errorf("Expected 5 items on page 2, got %d", len(p2))
 	}
 }

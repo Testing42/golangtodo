@@ -19,22 +19,42 @@ func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 	return t, nil
 }
 
-// GetTodos: Logic for GET all OR Search by title
+// GetTodos: Logic for GET all, Search by title, and Pagination
 func GetTodos(w http.ResponseWriter, r *http.Request) {
 	// NEW: Check for a search query parameter (e.g., /todos/v1?search=milk)
 	searchTerm := r.URL.Query().Get("search")
+
+	// NEW: Get Pagination parameters from URL (e.g., /todos/v1?page=2&limit=10)
+	pageStr := r.URL.Query().Get("page")
+	limitStr := r.URL.Query().Get("limit")
+
+	// NEW: Set Defaults for Pagination
+	page, _ := strconv.Atoi(pageStr)
+	if page < 1 {
+		page = 1
+	}
+
+	limit, _ := strconv.Atoi(limitStr)
+	// Default to 10 items, max 100 for safety
+	if limit < 1 || limit > 100 {
+		limit = 10
+	}
+
+	// NEW: Calculate Offset (How many items to skip)
+	offset := (page - 1) * limit
 
 	var rows *sql.Rows
 	var err error
 
 	if searchTerm != "" {
-		// NEW: Use LIKE for partial matches.
+		// UPDATED: Use LIKE for partial matches with LIMIT and OFFSET
 		// The % wildcards allow matching the term anywhere in the title.
-		query := "SELECT id, title, completed FROM todos WHERE title LIKE ?"
-		rows, err = DB.Query(query, "%"+searchTerm+"%")
+		query := "SELECT id, title, completed FROM todos WHERE title LIKE ? LIMIT ? OFFSET ?"
+		rows, err = DB.Query(query, "%"+searchTerm+"%", limit, offset)
 	} else {
-		// Original Logic: Just get everything if no search term is provided
-		rows, err = DB.Query("SELECT id, title, completed FROM todos")
+		// UPDATED: Get all items with LIMIT and OFFSET
+		query := "SELECT id, title, completed FROM todos LIMIT ? OFFSET ?"
+		rows, err = DB.Query(query, limit, offset)
 	}
 
 	if err != nil {
