@@ -7,6 +7,7 @@ import (
 	"log/slog" // NEW: Structured logging
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // sendJSONError: Helper to return consistent JSON error objects
@@ -202,4 +203,30 @@ func DeleteTodo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HealthCheck: A professional endpoint to verify the API and DB are alive
+func HealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Check if the database is actually reachable
+	err := DB.Ping()
+	if err != nil {
+		slog.Error("Health check failed: DB unreachable", "error", err)
+
+		// Use our professional error helper for the response
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":   "down",
+			"database": "disconnected",
+		})
+		return
+	}
+
+	// If everything is fine
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":   "up",
+		"database": "connected",
+		"time":     time.Now().Format(time.RFC3339),
+	})
 }

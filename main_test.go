@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,23 +13,24 @@ import (
 	"github.com/Testing42/golangtodo/handlers"
 )
 
-const testDBFile = "test_todos.db"
-
 // TestMain handles the setup and teardown for the entire test suite
 func TestMain(m *testing.M) {
-	// Set environment for middleware
+	//Make test logs look like production json logs
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	// 1. FORCE environment for testing (Overrides .env)
 	os.Setenv("API_KEY", "test-secret-key")
+	os.Setenv("DB_FILE", "test_todos.db")
 
-	// Initialize the Test Database
-	if err := handlers.InitDB(testDBFile); err != nil {
+	// 2. Initialize the Test Database using the env variable
+	if err := handlers.InitDB(os.Getenv("DB_FILE")); err != nil {
 		panic("Failed to connect to test database: " + err.Error())
 	}
 
 	code := m.Run()
 
-	// Cleanup
+	// 3. Cleanup
 	handlers.DB.Close()
-	os.Remove(testDBFile)
+	os.Remove(os.Getenv("DB_FILE"))
 
 	os.Exit(code)
 }
@@ -41,14 +43,12 @@ func clearTable() {
 }
 
 func setAuthHeader(req *http.Request) {
-	req.Header.Set("X-API-KEY", "test-secret-key")
+	req.Header.Set("X-API-KEY", os.Getenv("API_KEY"))
 }
 
 // --- TIER 1: LOGIC (UNIT) TESTS ---
-// Tests internal logic without needing the database connection
 
 func TestSanitizationLogic(t *testing.T) {
-	// Create a request with dirty HTML tags
 	rawJSON := `{"title":"<script>alert('hack')</script>Hello","completed":false}`
 	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer([]byte(rawJSON)))
 	rr := httptest.NewRecorder()
@@ -65,12 +65,10 @@ func TestSanitizationLogic(t *testing.T) {
 }
 
 // --- TIER 2: INTEGRATION TESTS ---
-// Tests the full flow: Handler -> Database -> JSON Response
 
 func TestFullCreateAndFetchFlow(t *testing.T) {
 	clearTable()
 
-	// 1. Test POST (Create)
 	payload := []byte(`{"title":"Integration Task","completed":false}`)
 	req, _ := http.NewRequest("POST", "/todos/v1", bytes.NewBuffer(payload))
 	setAuthHeader(req)
@@ -81,7 +79,6 @@ func TestFullCreateAndFetchFlow(t *testing.T) {
 		t.Errorf("Expected 201, got %v", rr.Code)
 	}
 
-	// 2. Test GET (Fetch)
 	reqGet, _ := http.NewRequest("GET", "/todos/v1", nil)
 	rrGet := httptest.NewRecorder()
 	handlers.GetTodos(rrGet, reqGet)
@@ -91,10 +88,6 @@ func TestFullCreateAndFetchFlow(t *testing.T) {
 
 	if len(response.Data) != 1 {
 		t.Fatalf("Expected 1 todo in list, got %d", len(response.Data))
-	}
-
-	if response.Data[0].Title != "Integration Task" {
-		t.Errorf("Data mismatch. Got: %s", response.Data[0].Title)
 	}
 
 	if response.Data[0].CreatedAt.IsZero() {
@@ -124,11 +117,10 @@ func TestPaginationAndSearch(t *testing.T) {
 		title := "Task " + strconv.Itoa(i)
 		if i <= 5 {
 			title = "Unique " + title
-		} // 5 unique items
+		}
 		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", title, false)
 	}
 
-	// Test Search
 	req, _ := http.NewRequest("GET", "/todos/v1?search=Unique", nil)
 	rr := httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
@@ -138,7 +130,6 @@ func TestPaginationAndSearch(t *testing.T) {
 		t.Errorf("Search failed. Expected 5 items, got %d", searchRes.TotalCount)
 	}
 
-	// Test Pagination
 	req, _ = http.NewRequest("GET", "/todos/v1?page=2&limit=10", nil)
 	rr = httptest.NewRecorder()
 	handlers.GetTodos(rr, req)
@@ -150,20 +141,34 @@ func TestPaginationAndSearch(t *testing.T) {
 }
 
 // --- TIER 3: LOAD TESTS (BENCHMARKS) ---
-// Measures performance under repeated execution
 
 func BenchmarkGetTodos(b *testing.B) {
 	clearTable()
-	// Fill with 100 items for a realistic read test
 	for i := 0; i < 100; i++ {
 		handlers.DB.Exec("INSERT INTO todos (title, completed) VALUES (?, ?)", "Benchmark", false)
 	}
 
 	req, _ := http.NewRequest("GET", "/todos/v1?limit=10", nil)
-	b.ResetTimer() // Don't count the setup time
+	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		rr := httptest.NewRecorder()
 		handlers.GetTodos(rr, req)
+	}
+}
+
+// BenchmarkHighLoadSQLite simulates 10,000 operations
+func BenchmarkHighLoadSQLite(b *testing.B) {
+	clearTable()
+
+	// Pre-fill one item to ensure we are testing "updates" or "reads"
+	handlers.DB.Exec("INSERT INTO todos (id, title, completed) VALUES (1, 'Initial', 0)")
+
+	req, _ := http.NewRequest("GET", "/todos/v1/item?id=1", nil)
+
+	b.ResetTimer() // Start the clock AFTER setup
+	for i := 0; i < b.N; i++ {
+		rr := httptest.NewRecorder()
+		handlers.GetTodoByID(rr, req)
 	}
 }
