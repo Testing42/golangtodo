@@ -19,9 +19,24 @@ func DecodeAndSanitize(w http.ResponseWriter, r *http.Request) (*Todo, error) {
 	return t, nil
 }
 
-// GetTodos: Logic for GET all
+// GetTodos: Logic for GET all OR Search by title
 func GetTodos(w http.ResponseWriter, r *http.Request) {
-	rows, err := DB.Query("SELECT id, title, completed FROM todos")
+	// NEW: Check for a search query parameter (e.g., /todos/v1?search=milk)
+	searchTerm := r.URL.Query().Get("search")
+
+	var rows *sql.Rows
+	var err error
+
+	if searchTerm != "" {
+		// NEW: Use LIKE for partial matches.
+		// The % wildcards allow matching the term anywhere in the title.
+		query := "SELECT id, title, completed FROM todos WHERE title LIKE ?"
+		rows, err = DB.Query(query, "%"+searchTerm+"%")
+	} else {
+		// Original Logic: Just get everything if no search term is provided
+		rows, err = DB.Query("SELECT id, title, completed FROM todos")
+	}
+
 	if err != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
